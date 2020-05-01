@@ -1,0 +1,134 @@
+// Copyright (C) 2020, ATA Engineering, Inc.
+// 
+// This program is free software; you can redistribute it and/or
+// modify it under the terms of the GNU Lesser General Public
+// License as published by the Free Software Foundation; either
+// version 3 of the License, or (at your option) any later version.
+// 
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+// Lesser General Public License for more details.
+// 
+// You should have received a copy of the GNU Lesser General Public License
+// along with this program; if not, write to the Free Software Foundation,
+// Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+
+#include <Loci.h>
+$include "chem.lh"
+#include "chemio.h"
+#include <cmath>
+
+namespace Loci {
+  typedef vector3d<real_t> vect3d;
+  typedef tensor3d<real_t> tens3d;
+  typedef real_t real;
+
+  $type cqrVolumeRatioThreshold param<real>;
+  $rule default(cqrVolumeRatioThreshold) { $cqrVolumeRatioThreshold = 50; }
+
+  $type cqrMaxAngleThreshold param<real>;
+  $rule default(cqrMaxAngleThreshold) { $cqrMaxAngleThreshold = 150; }
+
+  $type cqrIncludeAdjacentCells param<bool>;
+  $rule default(cqrIncludeAdjacentCells) { $cqrIncludeAdjacentCells = false; }
+
+  $type cqrFirstOrderCells store<char>;
+  $rule unit(cqrFirstOrderCells),constraint(geom_cells) {
+    $cqrFirstOrderCells = 0;
+  }
+
+  $rule apply((cl,cr)->cqrFirstOrderCells <- (cl,cr)->vol, 
+      cqrVolumeRatioThreshold)[Loci::Maximum], constraint((cl,cr)->geom_cells) {
+    if (max($cl->$vol, $cr->$vol) >
+        $cqrVolumeRatioThreshold * min($cl->$vol, $cr->$vol)) {
+      char tmp = 1;
+      join($cl->$cqrFirstOrderCells, tmp);
+      join($cr->$cqrFirstOrderCells, tmp);
+    }
+  }
+
+  $rule apply(ci->cqrFirstOrderCells <- ci->vol)[Loci::Maximum], 
+      constraint(ref->firstOrder_BCoption, ci->vol) {
+    char tmp = 1;
+    join($ci->$cqrFirstOrderCells,tmp);
+  }
+
+  $rule apply((cl,cr)->cqrFirstOrderCells <- (cl,cr)->cellcenter, facecenter,
+      cqrMaxAngleThreshold)[Loci::Maximum],constraint((cl,cr)->geom_cells) {
+    // maximum angle between line segment connecting cellcenters and line
+    // segments that connect cell centers to face centers.
+    vector3d<real_t> v1 = $cr->$cellcenter - $cl->$cellcenter;
+    vector3d<real_t> v2 = $facecenter - $cl->$cellcenter;
+    vector3d<real_t> v3 = $cr->$cellcenter - $facecenter;
+    real_t nv1 = max(norm(v1), real_t(1e-20));
+    real_t nv2 = max(norm(v2), real_t(1e-20));
+    real_t nv3 = max(norm(v3), real_t(1e-20));
+    real_t mincosa = min(dot(v1, v2) / (nv1 * nv2), dot(v1, v3) / (nv1 * nv3));
+    if (mincosa < cos($cqrMaxAngleThreshold * M_PI / 180.)) {
+      char tmp = 1;
+      join($cl->$cqrFirstOrderCells, tmp);
+      join($cr->$cqrFirstOrderCells, tmp);
+    }
+  }
+
+  $type cqrUseAdjacentCells Constraint;
+  $rule constraint(cqrUseAdjacentCells <- cqrIncludeAdjacentCells) {
+    $cqrUseAdjacentCells = EMPTY;
+    if ($cqrIncludeAdjacentCells) {
+      $cqrUseAdjacentCells = ~EMPTY;
+    }
+  }
+
+  $type cqrAdjacentCells store<char>;
+  $rule unit(cqrAdjacentCells),constraint(geom_cells, cqrUseAdjacentCells) {
+    $cqrAdjacentCells = 0;
+  }
+
+  $rule apply((cl,cr)->cqrAdjacentCells <- (cl,cr)->cqrFirstOrderCells)[Loci::Maximum], 
+      constraint((cl,cr)->geom_cells, cqrUseAdjacentCells) {
+    char tmp = 1;
+    if (static_cast<int>($cl->$cqrFirstOrderCells)) {
+      join($cr->$cqrAdjacentCells, tmp);
+    }
+    if (static_cast<int>($cr->$cqrFirstOrderCells)) {
+      join($cl->$cqrAdjacentCells, tmp);
+    }
+  }
+
+  $type firstOrderCells store<char>;
+  $rule apply(firstOrderCells <- cqrFirstOrderCells)[Loci::Maximum] {
+    join($firstOrderCells, $cqrFirstOrderCells);
+  }
+
+  $rule apply(firstOrderCells <- cqrAdjacentCells)[Loci::Maximum], 
+    constraint(geom_cells, cqrUseAdjacentCells) {
+    join($firstOrderCells, $cqrAdjacentCells);
+  }
+
+  $type firstOrderCellsOut store<real_t>;
+  $rule pointwise(firstOrderCellsOut <- firstOrderCells) {
+    $firstOrderCellsOut = 0;
+    if (static_cast<int>($firstOrderCells)) {
+      $firstOrderCellsOut = 1;
+    }
+  }
+
+  $type firstOrderCellsOut_f store<real_t>;
+  $rule pointwise(firstOrderCellsOut_f <- ci->firstOrderCells) {
+    $firstOrderCellsOut_f = 0;
+    if (static_cast<int>($ci->$firstOrderCells)) {
+      $firstOrderCellsOut_f = 1;
+    }
+  }
+
+  $rule pointwise(firstOrderCellsOut_f <- ci->vol), 
+      constraint(ref->firstOrder_BCoption, ci->vol) {
+    $firstOrderCellsOut_f = 1;
+  }
+
+}
+
+namespace chem {
+  OUTPUT_SCALAR("cell2node(firstOrderCellsOut)", firstOrder);
+}
